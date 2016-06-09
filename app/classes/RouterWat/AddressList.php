@@ -4,8 +4,16 @@ namespace RouterWat;
 use PEAR2\Net\RouterOS;
 
 /**
- * Represents an address list on the router, maintaining a simple json database that it is
- * synchronised to when needed.
+ * Represents an address list on the router. The values are stored in a json database file (intially
+ * seeded by whatever is in address list on router) and used to update the router. The json file is
+ * taken as the ground truth. That is, changes to the list on the router will have no affect if the
+ * json file has already been created. If the file doesn't exist yet, or has been deleted, then
+ * changes can be made directly on router.
+ *
+ * Calls to the update() method cause the existing list on router to be overwritten by the one is
+ * json file. However, this is only down if a minimum amount of time has passed - if it has not,
+ * then it simply won't be updated (i.e it isn't scheduled until later). However nothing is lost in
+ * this case, since the file won't be overridden.
  */
 class AddressList {
     private $config;
@@ -33,9 +41,33 @@ class AddressList {
     /**
      * @return array The array representation the list
      */
-    public function getAll() {
+    public function getRaw() {
         $data = json_decode(file_get_contents($this->dbFilePath), true);
         return $data;
+    }
+
+    /**
+     * @return array The array representation the addresses in list
+     */
+    public function getAddresses() {
+        $data = json_decode(file_get_contents($this->dbFilePath), true);
+        return $data['addresses'];
+    }
+
+
+    /**
+     * @return integer the time in seconds until next update is allowed, or 0 if no wait is needed.
+     */
+    public function timeUntilUpdateAllowed() {
+        $config = $this->config;
+        $data = json_decode(file_get_contents($this->dbFilePath), true);
+        $elapsed = time() - strtotime($data['last_update']);
+
+        if ($elapsed > $data['min_wait_between_updates']) {
+            return 0;
+        } else {
+            return $data['min_wait_between_updates'] - $elapsed;
+        }
     }
 
     /**
@@ -47,18 +79,55 @@ class AddressList {
      *
      */
     public function update() {
-        $config = $this->config;
-        $data = json_decode(file_get_contents($this->dbFilePath), true);
-        $elapsed = time() - strtotime($data['last_update']);
+        $timeUntilUpdateAllowed = $this->timeUntilUpdateAllowed();
 
-        if ($elapsed > $data['min_wait_between_updates']) {
+        if ($timeUntilUpdateAllowed == 0) {
             $this->saveToRouter();
-            return 0;
-        } else {
-            return $data['min_wait_between_updates'] - $elapsed;
         }
+
+        return $timeUntilUpdateAllowed;
     }
 
+    /**
+     * Adds address,comment pair to database file. Does not update router.
+     * $replaceIfSameComment (default true) specifies whether to check for existing comments and
+     * update the corresponding address if a match is found. This is used for when campaign offices
+     * were stored in comment
+     */
+    public function add($address, $comment = null, $replaceIfSameComment = true) {
+        $addresses = $this->getAddresses();
+
+        $match = false;
+        if ($replaceIfSameComment) {
+            foreach ($addresses as &$address) {
+                if ($address['comment'] == $comment) {
+                    $address['address'] = $address;
+                    $match = true;
+                }
+            }
+        }
+        unset($address);
+
+        if (!$match) {
+            $addresses[] = [
+                'address' => $address,
+                'comment' => $comment
+            ];
+        }
+
+        $this->saveDbFile($addresses);
+    }
+
+    /**
+     * Removes address from database file. Does not update router.
+     */
+    public function remove($address) {
+        $addresses = $this->getAddresses();
+
+        // Not implemented
+
+        $this->saveDbFile($addresses);
+    }
 
     /**
      * Overwrites list on router to match one in file
@@ -79,21 +148,17 @@ class AddressList {
         $util->setMenu('/ip firewall address-list');
 
         // Remove existing list
-        echo "Removing current entries for list '" . $this->listName . "' from router...";
         $util->remove(
             RouterOS\Query::where('list', $this->listName)
         );
-        echo "Done<br/>";
 
         // Re-create list from data
         foreach ($data['addresses'] as $address) {
-            echo "Adding $address[address]...";
             $util->add([
                 'list' => $data['list_name'],
                 'address' => $address['address'],
                 'comment' => $address['comment'],
             ]);
-            echo "Done<br/>";
         }
 
         // Update the 'last_update' section of database file. Easiest for now to just re-write file
