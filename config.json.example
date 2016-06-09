@@ -1,0 +1,8 @@
+{
+    "router": {
+        "name": "mr-router",
+        "address": "192.168.254.254",
+        "username": "admin",
+        "password": "???"
+    }
+}
