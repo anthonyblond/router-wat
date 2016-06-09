@@ -4,5 +4,9 @@
         "address": "192.168.254.254",
         "username": "admin",
         "password": "???"
-    }
+    },
+    "default_list_name": "wat_egads_whitelist",
+    "data_dir": "/home/anthony/whitelister/data",
+    "min_wait_between_updates": 60
+
 }
