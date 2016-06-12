@@ -48,8 +48,18 @@ $qvars = [];
 parse_str($_SERVER['QUERY_STRING'], $qvars);
 
 $timeUntilUpdateAllowed = $list->timeUntilUpdateAllowed();
+
+// Generally will be going through our own proxy
+if (!empty($_SERVER['HTTP_X_REAL_IP'])) {
+    $ips = explode(",", $_SERVER['HTTP_X_REAL_IP']);
+    $clientIpAddress = $ips[0];
+} else {
+    $clientIpAddress = $_SERVER['REMOTE_ADDR'];
+}
+
 $jsData = [
     'time_until_update_allowed' => $timeUntilUpdateAllowed,
+    'client_ip_address' => $clientIpAddress,
 ];
 
 if (empty($qvars)) {
@@ -108,7 +118,12 @@ if (empty($qvars)) {
             <input type="hidden" name="action" value="add">
             <div class="form-group">
                 <label for="input-address">IP address: &nbsp;&nbsp;</label>
-                <input type="text" class="form-control" name="address" id="input-address" placeholder="IP address goes here">
+                <div class="input-group">
+                    <input type="text" class="form-control" name="address" id="input-address" placeholder="IP address goes here">
+                    <div class="input-group-btn">
+                        <button id="btn-autofill-ip" class="btn btn-default" type="button"><span class="fa fa-bullseye"></span> Detect</button>
+                    </div>
+                </div>
             </div>
             <div class="form-group">
                 <label for="input-comment">&nbsp;&nbsp;Campaign office/note:&nbsp;&nbsp; </label>

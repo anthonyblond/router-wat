@@ -14,4 +14,8 @@ $(document).ready(function() {
             }
         },1000);
     }
+
+    $("#btn-autofill-ip").click(function() {
+        $("#input-address").val(jsData.client_ip_address);
+    })
 });
