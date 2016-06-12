@@ -10,15 +10,21 @@ use PEAR2\Net\RouterOS;
  * json file has already been created. If the file doesn't exist yet, or has been deleted, then
  * changes can be made directly on router.
  *
- * Calls to the update() method cause the existing list on router to be overwritten by the one is
- * json file. However, this is only down if a minimum amount of time has passed - if it has not,
- * then it simply won't be updated (i.e it isn't scheduled until later). However nothing is lost in
- * this case, since the file won't be overridden.
+ * Every time a change is made, an update flag file is set, that an external cronjob can check and
+ * cause an update of the router to take place.
+ *
+ * Calls to the forceUpdate() method cause the existing list on router to be overwritten by the one
+ * is json file. However, this is only down if a minimum amount of time has passed - if it has not,
+ * then it simply won't be updated (but will be a the next scheduled external update cron job).
+ *
+ * If I were to do this again from scratch, I'd do it in a totally different way. But it is just a
+ * quick and dirty solution to a problem.
  */
 class AddressList {
     private $config;
     private $listName;
     private $dbFilePath;
+    private $updateFlagFilePath;
 
     function __construct($listName = null) {
         $config = json_decode(file_get_contents(CONFIG_FILE), true);
@@ -31,6 +37,7 @@ class AddressList {
         }
 
         $this->dbFilePath = $config['data_dir'] . '/' . $this->listName . '.json';
+        $this->updateFlagFilePath = $config['data_dir'] . '/' . $this->listName . '.update';
 
         // If file doesn't exist, then start off with loading from router
         if (!file_exists($this->dbFilePath)) {
@@ -54,12 +61,20 @@ class AddressList {
         return $data['addresses'];
     }
 
+    /**
+     * @return  boolean true if list contains specified address
+     */
+    public function hasAddress($checkAddress) {
+        foreach ($this->getAddresses() as $address) {
+            if ($address['address'] == $checkAddress) return true;
+        }
+        return false;
+    }
 
     /**
      * @return integer the time in seconds until next update is allowed, or 0 if no wait is needed.
      */
     public function timeUntilUpdateAllowed() {
-        $config = $this->config;
         $data = json_decode(file_get_contents($this->dbFilePath), true);
         $elapsed = time() - strtotime($data['last_update']);
 
@@ -78,11 +93,12 @@ class AddressList {
      *                      are left before next update can be done.
      *
      */
-    public function update() {
+    public function forceUpdate() {
         $timeUntilUpdateAllowed = $this->timeUntilUpdateAllowed();
 
         if ($timeUntilUpdateAllowed == 0) {
             $this->saveToRouter();
+            $this->unsetUpdateFlagFile();
         }
 
         return $timeUntilUpdateAllowed;
@@ -90,43 +106,52 @@ class AddressList {
 
     /**
      * Adds address,comment pair to database file. Does not update router.
-     * $replaceIfSameComment (default true) specifies whether to check for existing comments and
-     * update the corresponding address if a match is found. This is used for when campaign offices
-     * were stored in comment
      */
-    public function add($address, $comment = null, $replaceIfSameComment = true) {
+    public function add($address, $comment = null) {
         $addresses = $this->getAddresses();
 
-        $match = false;
-        if ($replaceIfSameComment) {
-            foreach ($addresses as &$address) {
-                if ($address['comment'] == $comment) {
-                    $address['address'] = $address;
-                    $match = true;
-                }
-            }
-        }
-        unset($address);
+        $addresses[] = [
+            'address' => $address,
+            'comment' => $comment
+        ];
 
-        if (!$match) {
-            $addresses[] = [
-                'address' => $address,
-                'comment' => $comment
-            ];
-        }
-
-        $this->saveDbFile($addresses);
+        $this->saveDbFile($addresses, true);
     }
 
     /**
-     * Removes address from database file. Does not update router.
+     * Removes address from database file.
      */
-    public function remove($address) {
+    public function remove($removeAddress) {
         $addresses = $this->getAddresses();
+        $match = false;
+        foreach ($addresses as $idx => $address) {
+            if ($address['address'] == $removeAddress) {
+                unset($addresses[$idx]);
+                $match = true;
+            }
+        }
 
-        // Not implemented
+        if (!$match) {
+            throw new \Exception("address match not found");
+        }
 
-        $this->saveDbFile($addresses);
+        $this->saveDbFile($addresses, true);
+    }
+
+    public function checkUpdateFlagFile() {
+        return file_exists($this->updateFlagFilePath);
+    }
+
+    private function setUpdateFlagFile() {
+        if (!touch($this->updateFlagFilePath)) {
+            throw new \Exception("Unable to set update flag file");
+        }
+    }
+
+    private function unsetUpdateFlagFile() {
+        if (file_exists($this->updateFlagFilePath)) {
+            unlink($this->updateFlagFilePath);
+        }
     }
 
     /**
@@ -162,7 +187,16 @@ class AddressList {
         }
 
         // Update the 'last_update' section of database file. Easiest for now to just re-write file
-        $this->saveDbFile($data['addresses']);
+        $newData = [
+            'list_name' => $data['list_name'],
+            'last_update' => date('c'),
+            'min_wait_between_updates' => $this->config['min_wait_between_updates'],
+            'addresses' => $data['addresses'],
+        ];
+        $dataJson = json_encode($newData, JSON_PRETTY_PRINT);
+        if (file_put_contents($this->dbFilePath, $dataJson) === FALSE) {
+            throw new \Exception("Unable to write to dbFilePath");
+        }
     }
 
     /**
@@ -196,11 +230,18 @@ class AddressList {
         $this->saveDbFile($addresses);
     }
 
-    private function saveDbFile($addresses) {
+    private function saveDbFile($addresses, $setUpdateFlagFile = false) {
+        if (file_exists($this->dbFilePath)) {
+            $data = json_decode(file_get_contents($this->dbFilePath), true);
+            $lastUpdate = $data['last_update'];
+        } else {
+            $lastUpdate = date('c');
+        }
+
         // WRITE TO JSON FILE, OVERWRITING IF ALREADY EXISTS
         $data = [
             'list_name' => $this->listName,
-            'last_update' => date('c'),
+            'last_update' => $lastUpdate,
             'min_wait_between_updates' => $this->config['min_wait_between_updates'],
             'addresses' => $addresses,
         ];
@@ -208,6 +249,8 @@ class AddressList {
         if (file_put_contents($this->dbFilePath, $dataJson) === FALSE) {
             throw new \Exception("Unable to write to dbFilePath");
         }
+
+        if ($setUpdateFlagFile) $this->setUpdateFlagFile();
     }
 }
 

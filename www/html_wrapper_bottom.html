@@ -5,5 +5,14 @@
         <!-- Placed at the end of the document so the pages load faster -->
         <script src="//ajax.googleapis.com/ajax/libs/jquery/2.1.1/jquery.min.js"></script>
         <script src="//maxcdn.bootstrapcdn.com/bootstrap/3.3.6/js/bootstrap.min.js"></script>
+
+        <!-- Data passed to javascripts. -->
+        <script type="text/javascript">
+            var jsData = <?= json_encode($jsData); ?>;
+        </script>
+
+        <script src="/js/routerwat.js"></script>
+
+
     </body>
 </html>

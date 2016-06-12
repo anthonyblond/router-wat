@@ -41,13 +41,16 @@ true, // Throw true
 true); // prepend, since the library we include doesn't check prefix
 
 $list = new RouterWat\AddressList('wat_egads_whitelist');
-// var_dump($list->getAll());
-// $list->update();
 
 require 'html_wrapper_top.html';
 
 $qvars = [];
 parse_str($_SERVER['QUERY_STRING'], $qvars);
+
+$timeUntilUpdateAllowed = $list->timeUntilUpdateAllowed();
+$jsData = [
+    'time_until_update_allowed' => $timeUntilUpdateAllowed,
+];
 
 if (empty($qvars)) {
     // Nothing to do
@@ -55,56 +58,66 @@ if (empty($qvars)) {
     $address = $qvars['address'];
     $comment = $qvars['comment'];
 
-    $parts = explode("/",$address);
+    $parts = explode("/", $address);
     if (count($parts) > 1) {
         // Assume next bit is subnet
         $validIp = filter_var($parts[0], FILTER_VALIDATE_IP) && is_numeric($parts[1]) && intval($parts[1]) == $parts[1];
         if (!$validIp) {
-            echo '<div class="alert alert-danger" role="alert"><strong>Failed!</strong> '.$address.' is not a valid IP and subnet mask. (Use CIDR notation)</div>';
+            echo '<div class="alert alert-dismissible alert-danger" role="alert"><strong>Failed!</strong> '.$address.' is not a valid IP and subnet mask. (Use CIDR notation)<button type="button" class="close" data-dismiss="alert" aria-label="Close"><span aria-hidden="true">&times;</span></button></div>';
         }
     } else {
         $validIp = filter_var($address, FILTER_VALIDATE_IP);
         if (!$validIp) {
-            echo '<div class="alert alert-danger" role="alert"><strong>Failed!</strong> '.$address.' is not a valid IP</div>';
+            echo '<div class="alert alert-dismissible alert-danger" role="alert"><strong>Failed!</strong> '.$address.' is not a valid IP<button type="button" class="close" data-dismiss="alert" aria-label="Close"><span aria-hidden="true">&times;</span></button></div>';
         }
     }
     if ($validIp) {
-        $list->add($address, $comment, true);
-        $retval = $list->update();
-        if ($retval == 0) {
-            echo '<div class="alert alert-success" role="alert"><strong>Success!</strong> Added '.$address.' to whitelist</div>';
+        if ($list->hasAddress($address)) {
+            echo '<div class="alert alert-dismissible alert-danger" role="alert"><strong>Failed!</strong> '.$address.' already in whitelist<button type="button" class="close" data-dismiss="alert" aria-label="Close"><span aria-hidden="true">&times;</span></button></div>';
         } else {
-            echo '<div class="alert alert-warning" role="alert"><strong>Hold your horses!</strong> Unable to add '.$address.' to whitelist, insufficient time has passed since last update. Need to wait another '.$retval.' seconds.</div>';
+            $list->add($address, $comment);
+            echo '<div class="alert alert-dismissible alert-success" role="alert"><strong>Success!</strong> Added '.$address.' to whitelist<button type="button" class="close" data-dismiss="alert" aria-label="Close"><span aria-hidden="true">&times;</span></button></div>';
         }
     }
 } elseif ($qvars['action'] == 'remove') {
+    $address = $qvars['address'];
 
+    if ($list->hasAddress($address)) {
+        try {
+            $list->remove($address);
+            echo '<div class="alert alert-dismissible alert-success" role="alert"><strong>Success!</strong> Removed '.$address.' from whitelist<button type="button" class="close" data-dismiss="alert" aria-label="Close"><span aria-hidden="true">&times;</span></button></div>';
+        } catch (\Exception $e) {
+            echo '<div class="alert alert-dismissible alert-danger" role="alert"><strong>Failed!</strong> Cannot remove '.$address.', error occurred.<button type="button" class="close" data-dismiss="alert" aria-label="Close"><span aria-hidden="true">&times;</span></button></div>';
+        }
+    } else {
+        echo '<div class="alert alert-dismissible alert-danger" role="alert"><strong>Failed!</strong> Cannot remove '.$address.', not in whitelist<button type="button" class="close" data-dismiss="alert" aria-label="Close"><span aria-hidden="true">&times;</span></button></div>';
+    }
+} elseif ($qvars['action'] == 'force_update') {
+    if ($list->forceUpdate() == 0) {
+        echo '<div class="alert alert-dismissible alert-success" role="alert"><strong>Success!</strong> Forced update to router<button type="button" class="close" data-dismiss="alert" aria-label="Close"><span aria-hidden="true">&times;</span></button></div>';
+    } else {
+        echo '<div id="horses-alert" class="alert alert-dismissible alert-warning" role="alert"><strong>Hold your horses!</strong> Not enough time has passed. You need to wait another <span class="wait-time-left">'.$timeUntilUpdateAllowed.'</span> seconds.<button type="button" class="close" data-dismiss="alert" aria-label="Close"><span aria-hidden="true">&times;</span></button></div>';
+    }
 }
-
-$timeUntilUpdateAllowed = $list->timeUntilUpdateAllowed();
 ?>
 
 <div class="panel panel-default">
     <div class="panel-heading"><h1 class="panel-title">Add an IP address to list</h1></div>
     <div class="panel-body">
-        <form class="form-inline <?= $timeUntilUpdateAllowed == 0 ? '' : ' hidden'; ?>" id="form-add-address" method="get" action="<?= $_SERVER['REQUEST_URI'] ?>">
+        <form class="form-inline" id="form-add-address" method="get" action="<?= $_SERVER['PHP_SELF'] ?>">
             <input type="hidden" name="action" value="add">
             <div class="form-group">
                 <label for="input-address">IP address: &nbsp;&nbsp;</label>
                 <input type="text" class="form-control" name="address" id="input-address" placeholder="IP address goes here">
             </div>
             <div class="form-group">
-                <label for="input-comment">&nbsp;&nbsp;Campaign office:&nbsp;&nbsp; </label>
+                <label for="input-comment">&nbsp;&nbsp;Campaign office/note:&nbsp;&nbsp; </label>
                 <input type="text" class="form-control" name="comment" id="input-comment" placeholder="Unique name">
             </div>
             &nbsp;&nbsp;
             <button type="submit" class="btn btn-primary">Add new IP</button>
-            <span class="help-block">If specified campaign office name already exists, it's IP will be updated.</span>
         </form>
-        <div id="wait-time-warning" class="<?= $timeUntilUpdateAllowed == 0 ? 'hidden' : ''; ?>">
-            Not enough time has ellapsed since the last address was added.<br/>
-            You need to wait another <span id="wait-time-left"><?= $timeUntilUpdateAllowed; ?></span> seconds<br/>
-        </div>
+
     </div>
 </div>
 
@@ -114,20 +127,39 @@ $timeUntilUpdateAllowed = $list->timeUntilUpdateAllowed();
     <table class="table" id="addresses">
         <tr>
             <th>IP</th>
-            <th>Campaign office</th>
+            <th>Campaign office / Note</th>
+            <th></th>
         </tr>
 <?php
 foreach ($list->getAddresses() as $address) {
     echo "<tr>\n";
-    echo "<td>$address[address]</td>\n";
-    echo "<td>$address[comment]</td>\n";
+    echo "<td class=\"ip-address\">$address[address]</td>\n";
+    echo "<td class=\"comment\">$address[comment]</td>\n";
+    echo '<td><a class="pull-right" href="' . $_SERVER['PHP_SELF'] . '?action=remove&address=' . urlencode($address['address']) . '"><span class="fa fa-fw fa-trash-o"></span></td>'."\n";
     echo "</tr>\n";
 }
 ?>
     </table>
 </div>
 
+
+<div class="panel panel-default">
+    <div class="panel-heading"><h1 class="panel-title">Force update to router</h1></div>
+    <div class="panel-body">
+        <p>Forcing an update isn't generally necessary. Router will be updated roughly every minute and a half automatically</p>
+        <div id="wait-time-warning" class="<?= $timeUntilUpdateAllowed == 0 ? 'hidden' : ''; ?>">
+            Not enough time has ellapsed since the last update.<br/>
+            You need to wait another <span class="wait-time-left"><?= $timeUntilUpdateAllowed; ?></span> seconds<br/>
+        </div>
+
+        <form class="form-inline <?= $timeUntilUpdateAllowed == 0 ? '' : ' hidden'; ?>" id="form-force-update" method="get" action="<?= $_SERVER['PHP_SELF'] ?>">
+            <input type="hidden" name="action" value="force_update">
+            <button type="submit" class="btn btn-default"><span class="fa fa-fw fa-refresh"></span> Force router update</button>
+        </form>
+    </div>
+</div>
+
 <?php
-require 'html_wrapper_botom.html';
+require 'html_wrapper_bottom.html';
 
 ?>
